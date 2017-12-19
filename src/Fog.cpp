@@ -1,0 +1,1119 @@
+#include "Ddini.h"
+#include "FastDraw.h"
+#include "LoadSave.h"
+#include "Mapa.h"
+#include "MapSprites.h"
+#include "NewMon.h"
+#include "ShipTrace.h"
+
+
+#include "Fog.h"
+
+//Offset for fog coordinates calculation
+const int kFogOffset = 3;
+
+int FMSX;
+int FMSX2;
+
+uint16_t * fmap;
+uint16_t * fmap1;
+
+uint8_t fog[ 8192 + 1024 ];
+uint8_t wfog[ 8192 ];
+static uint8_t rfog[8192];  // Used only one time
+
+uint8_t Optional1[8192];
+uint8_t Optional2[8192];
+uint8_t Optional3[8192];
+
+uint8_t darkfog[ 40960 ];
+uint8_t yfog[ 8192 ];
+uint8_t trans4[ 65536 ];
+uint8_t trans8[ 65536 ];
+uint8_t AlphaR[ 65536 ];
+uint8_t AlphaW[ 65536 ];
+uint8_t refl[3072];
+uint8_t WaterCost[65536];
+static uint8_t GraySet[256];    // Used only one time
+uint8_t Bright[8192];
+
+void ClearFog()
+{
+	memset( fmap, 0, LX_fmap*LX_fmap * 2 );
+	memset( fmap1, 0, LX_fmap*LX_fmap * 2 );
+}
+
+void LoadOptionalTable( int n, const char* Name )
+{
+	ResFile F = RReset( Name );
+	switch ( n )
+	{
+	case 3:
+		RBlockRead( F, Optional1, 8192 );
+		break;
+	case 4:
+		RBlockRead( F, Optional2, 8192 );
+		break;
+	case 5:
+		RBlockRead( F, Optional3, 8192 );
+		break;
+    }
+	RClose( F );
+}
+
+int FogMode;
+
+#define FMSX_C 134
+#define FMSX2_C (2*FMSX_C)
+
+static void ProcessFog1_1()
+{
+	memcpy( fmap1, fmap, LX_fmap*LX_fmap * 2 );
+
+	int mlx = ( msx >> 2 ) + kFogOffset + kFogOffset;
+	int mly = ( msy >> 2 ) + kFogOffset + kFogOffset;
+	int fDV = ( mlx*mly ) << 1;
+	int fDH = ( mlx << 1 ) - 2;
+
+	// BoonXRay 10.08.2017
+	//__asm
+	{
+		//push	esi
+		//push	edi
+		//mov		esi, fmap1
+		//mov		edi, fmap
+		//mov		ebx, fDV
+		//mov		ecx, mlx
+		//inc		ecx
+		unsigned int TmpESI = reinterpret_cast<unsigned int>(fmap1);
+		unsigned int TmpEDI = reinterpret_cast<unsigned int>(fmap);
+		unsigned int TmpEBX = fDV;
+		unsigned char & TmpBL = *reinterpret_cast<unsigned char *>(&TmpEBX);
+		unsigned char & TmpBH = *(reinterpret_cast<unsigned char *>(&TmpEBX) + 1);
+		unsigned int TmpECX = mlx + 1;
+		unsigned short TmpAX = 0, TmpDX = 0;
+
+		//xor		ebx, ebx
+		//mov		bl, byte ptr mlx
+		//mov		bh, byte ptr mly
+		//dec		bl
+		//dec		bh
+		//mov		ecx, 2 + FMSX2_C
+		TmpEBX = 0;
+		TmpBL = mlx - 1;
+		TmpBH = mly - 1;
+		TmpECX = 2 + FMSX2_C;
+	lab4 : 
+		//mov		dx, [esi + ecx - FMSX2_C]
+		//add		dx, [esi + ecx + FMSX2_C]
+		//add		dx, [esi + ecx - 2]
+		//add		dx, [esi + ecx + 2]
+		//mov		ax, dx
+		//shr		ax, 2
+		//shr		dx, 10
+		//sub		ax, dx
+		TmpDX = *reinterpret_cast<unsigned short *>(TmpESI + TmpECX - FMSX2_C);
+		TmpDX += *reinterpret_cast<unsigned short *>(TmpESI + TmpECX + FMSX2_C);
+		TmpDX += *reinterpret_cast<unsigned short *>(TmpESI + TmpECX - 2);
+		TmpDX += *reinterpret_cast<unsigned short *>(TmpESI + TmpECX + 2);
+		TmpAX = TmpDX >> 2;
+		TmpDX >>= 10;
+		TmpAX -= TmpDX;
+
+		//mov		word ptr[edi + ecx], ax
+		//add		ecx, 2
+		//dec		bl
+		//jnz		lab4
+		//sub		ecx, fDH
+		//add		ecx, FMSX2_C
+		//mov		bl, byte ptr mlx
+		//dec		bl
+		//dec		bh
+		//jnz		lab4
+		*reinterpret_cast<unsigned short *>(TmpEDI + TmpECX) = TmpAX;
+		TmpECX += 2;
+		TmpBL--;
+		if (TmpBL != 0) goto lab4;
+		TmpECX -= fDH;
+		TmpECX += FMSX2_C;
+		TmpBL = mlx - 1;
+		TmpBH--;
+		if (TmpBH != 0) goto lab4;
+		//pop		edi
+		//pop		esi
+	}
+}
+
+#undef FMSX_C
+#undef FMSX2_C
+
+#define FMSX_C (134<<1)
+#define FMSX2_C (2*FMSX_C)
+
+static void ProcessFog1_2()
+{
+	memcpy( fmap1, fmap, LX_fmap*LX_fmap * 2 );
+	int mlx = ( msx >> 2 ) + kFogOffset + kFogOffset;
+	int mly = ( msy >> 2 ) + kFogOffset + kFogOffset;
+	int fDV = ( mlx*mly ) << 1;
+	int fDH = ( mlx << 1 ) - 2;
+    // BoonXRay 10.08.2017
+	//__asm 
+	{
+		//push	esi
+		//push	edi
+		//mov		esi, fmap1
+		//mov		edi, fmap
+		//mov		ebx, fDV
+		//mov		ecx, mlx
+		//inc		ecx
+		unsigned int TmpESI = reinterpret_cast<unsigned int>(fmap1);
+		unsigned int TmpEDI = reinterpret_cast<unsigned int>(fmap);
+		unsigned int TmpEBX = fDV;
+		unsigned char & TmpBL = *reinterpret_cast<unsigned char *>(&TmpEBX);
+		unsigned char & TmpBH = *(reinterpret_cast<unsigned char *>(&TmpEBX) + 1);
+		unsigned int TmpECX = mlx + 1;
+		unsigned short TmpAX = 0, TmpDX = 0;
+
+		//xor		ebx, ebx
+		//mov		bl, byte ptr mlx
+		//mov		bh, byte ptr mly
+		//dec		bl
+		//dec		bh
+		//mov		ecx, 2 + FMSX2_C
+		TmpEBX = 0;
+		TmpBL = mlx - 1;
+		TmpBH = mly - 1;
+		TmpECX = 2 + FMSX2_C;
+	lab4 : 
+		//mov		dx, [esi + ecx - FMSX2_C]
+		//add		dx, [esi + ecx + FMSX2_C]
+		//add		dx, [esi + ecx - 2]
+		//add		dx, [esi + ecx + 2]
+		//mov		ax, dx
+		//shr		ax, 2
+		//shr		dx, 10
+		//sub		ax, dx
+		TmpDX = *reinterpret_cast<unsigned short *>(TmpESI + TmpECX - FMSX2_C);
+		TmpDX += *reinterpret_cast<unsigned short *>(TmpESI + TmpECX + FMSX2_C);
+		TmpDX += *reinterpret_cast<unsigned short *>(TmpESI + TmpECX - 2);
+		TmpDX += *reinterpret_cast<unsigned short *>(TmpESI + TmpECX + 2);
+		TmpAX = TmpDX >> 2;
+		TmpDX >>= 10;
+		TmpAX -= TmpDX;
+
+		//mov		word ptr[edi + ecx], ax
+		//add		ecx, 2
+		//dec		bl
+		//jnz		lab4
+		//sub		ecx, fDH
+		//add		ecx, FMSX2_C
+		//mov		bl, byte ptr mlx
+		//dec		bl
+		//dec		bh
+		//jnz		lab4
+		*reinterpret_cast<unsigned short *>(TmpEDI + TmpECX) = TmpAX;
+		TmpECX += 2;
+		TmpBL--;
+		if (TmpBL != 0) goto lab4;
+		TmpECX -= fDH;
+		TmpECX += FMSX2_C;
+		TmpBL = mlx - 1;
+		TmpBH--;
+		if (TmpBH != 0) goto lab4;
+
+		//pop		edi
+		//pop		esi
+    }
+}
+
+
+#undef FMSX_C
+#undef FMSX2_C
+
+#define FMSX_C (134<<2)
+#define FMSX2_C (2*FMSX_C)
+
+static void ProcessFog1_3()
+{
+	memcpy( fmap1, fmap, LX_fmap*LX_fmap * 2 );
+	int mlx = ( msx >> 2 ) + kFogOffset + kFogOffset;
+	int mly = ( msy >> 2 ) + kFogOffset + kFogOffset;
+	int fDV = ( mlx*mly ) << 1;
+	int fDH = ( mlx << 1 ) - 2;
+    // BoonXRay 10.08.2017
+	//__asm 
+	{
+		//push	esi
+		//push	edi
+		//mov		esi, fmap1
+		//mov		edi, fmap
+		//mov		ebx, fDV
+		//mov		ecx, mlx
+		//inc		ecx
+		unsigned int TmpESI = reinterpret_cast<unsigned int>(fmap1);
+		unsigned int TmpEDI = reinterpret_cast<unsigned int>(fmap);
+		unsigned int TmpEBX = fDV;
+		unsigned short & TmpBX = *reinterpret_cast<unsigned short *>(&TmpEBX);
+		unsigned int TmpECX = mlx + 1;
+		unsigned short TmpAX = 0, TmpDX = 0;
+
+		//xor		ebx, ebx
+		//mov		bx, word ptr mlx
+		//dec		bx
+		//dec		mly
+		//mov		ecx, 2 + FMSX2_C
+		TmpEBX = 0;
+		TmpBX = mlx - 1;
+		mly--;
+		TmpECX = 2 + FMSX2_C;
+	lab4 : 
+		//mov		dx, [esi + ecx - FMSX2_C]
+		//add		dx, [esi + ecx + FMSX2_C]
+		//add		dx, [esi + ecx - 2]
+		//add		dx, [esi + ecx + 2]
+		//mov		ax, dx
+		//shr		ax, 2
+		//shr		dx, 10
+		//sub		ax, dx
+		TmpDX = *reinterpret_cast<unsigned short *>(TmpESI + TmpECX - FMSX2_C);
+		TmpDX += *reinterpret_cast<unsigned short *>(TmpESI + TmpECX + FMSX2_C);
+		TmpDX += *reinterpret_cast<unsigned short *>(TmpESI + TmpECX - 2);
+		TmpDX += *reinterpret_cast<unsigned short *>(TmpESI + TmpECX + 2);
+		TmpAX = TmpDX >> 2;
+		TmpDX >>= 10;
+		TmpAX -= TmpDX;
+
+		//mov		word ptr[edi + ecx], ax
+		//add		ecx, 2
+		//dec		bx
+		//jnz		lab4
+		//sub		ecx, fDH
+		//add		ecx, FMSX2_C
+		//mov		bx, word ptr mlx
+		//dec		bx
+		//dec		mly
+		//jnz		lab4
+		*reinterpret_cast<unsigned short *>(TmpEDI + TmpECX) = TmpAX;
+		TmpECX += 2;
+		TmpBX--;
+		if (TmpBX != 0) goto lab4;
+		TmpECX -= fDH;
+		TmpECX += FMSX2_C;
+		TmpBX = mlx - 1;
+		mly--;
+		if (mly != 0) goto lab4;
+
+		//pop		edi
+		//pop		esi
+    }
+}
+
+void ProcessFog1()
+{
+	switch ( ADDSH )
+	{
+	case 1:
+		ProcessFog1_1();
+		break;
+	case 2:
+		ProcessFog1_2();
+		break;
+	case 3:
+		ProcessFog1_3();
+		break;
+	}
+}
+
+static int FOGOFFS[1024];
+
+uint8_t graysc[256];
+
+void LoadFog( int set )
+{
+	CurrentCursorGP = set + 5;
+	CurPalette = set;
+	char cc[128];
+	sprintf( cc, "%d\\agew_1d.grd", set );
+	ResFile fx = RReset( cc );
+	RBlockRead( fx, &fog[1024], 8192 );
+	memcpy( &fog[0], &fog[1024], 256 );
+	memcpy( &fog[256], &fog[1024], 256 );
+	memcpy( &fog[512], &fog[1024], 256 );
+	memcpy( &fog[512 + 256], &fog[1024], 256 );
+	RClose( fx );
+	fx = RReset( "0\\gray.set" );
+	RBlockRead( fx, &graysc, 256 );
+	RClose( fx );
+	sprintf( cc, "%d\\orange.grd", set );
+	fx = RReset( cc );
+	RBlockRead( fx, &Optional1, 8192 );
+	RClose( fx );
+	sprintf( cc, "%d\\agew_1w.grd", set );
+	fx = RReset( cc );
+	RBlockRead( fx, &wfog, 8192 );
+	RClose( fx );
+	sprintf( cc, "%d\\agew_1br.grd", set );
+	fx = RReset( cc );
+	RBlockRead( fx, &Bright, 8192 );
+	RClose( fx );
+	fx = RReset( "ageb.grd" );
+	RBlockRead( fx, &rfog, 8192 );
+	RClose( fx );
+	sprintf( cc, "%d\\agew_1r.grd", set );
+	fx = RReset( cc );
+	RBlockRead( fx, &yfog, 8192 );
+	RClose( fx );
+	fx = RReset( "0\\agew_1dr.grd" );
+	RBlockRead( fx, &darkfog, 40960 );
+	RClose( fx );
+	sprintf( cc, "%d\\agew_tr.grd", set );
+	fx = RReset( cc );
+	RBlockRead( fx, &trans8, 65536 );
+	RClose( fx );
+	sprintf( cc, "%d\\agew_tr4.grd", set );
+	fx = RReset( cc );
+	RBlockRead( fx, &trans4, 65536 );
+	RClose( fx );
+	fx = RReset( "wcost.grd" );
+	RBlockRead( fx, &WaterCost, 65536 );
+	RClose( fx );
+	fx = RReset( "refl.grd" );
+	RBlockRead( fx, &refl, 3072 );
+	RClose( fx );
+	fx = RReset( "AlphaYR.grd" );
+	RBlockRead( fx, &AlphaR, 65536 );
+	RClose( fx );
+	fx = RReset( "AlphaW.grd" );
+	RBlockRead( fx, &AlphaW, 65536 );
+	RClose( fx );
+	fx = RReset( "agew_1gc.pal" );
+	RBlockRead( fx, &GraySet, 256 );
+	RClose( fx );
+	for ( int i = 0; i < 1024; i++ )
+	{
+		FOGOFFS[i] = i*FMSX;
+	}
+	LoadBlobs();
+}
+
+void SetupFog()
+{
+	for ( int i = 0; i < 1024; i++ )
+	{
+		FOGOFFS[i] = i * FMSX;
+	}
+}
+
+static void ShowSuperFluentFog32_160_16( int x, int y, int z1x, int z2x, int z3x, int z4x )
+{
+	int z1 = z1x * 65536;
+	int	z2 = z2x * 65536;
+	int z3 = z3x * 65536;
+	int	z4 = z4x * 65536;
+
+	int scrof = int( ScreenPtr ) + x + y * SCRSizeX;
+	int adds = SCRSizeX - 32;
+
+	if ( z1x <= 63 && z2x <= 63 && z3x <= 63 && z4x <= 63 )
+	{
+		return;
+	}
+
+	if ( z1x >= 96 && z2x >= 96 && z3x >= 96 && z4x >= 96 )
+	{
+        // BoonXRay 10.08.2017
+		//__asm
+		{
+			//push	edi
+			//mov		ebx, adds
+			//mov		edi, scrof
+			//mov		dl, 16
+			//xor eax, eax
+			//cld
+			unsigned int TmpEBX = adds;
+			unsigned int TmpEDI = scrof;
+			unsigned short TmpDL = 16;
+			unsigned int TmpEAX = 0;
+		iug : 
+			//mov		ecx, 8
+			//rep		stosd
+			unsigned int TmpECX = 8;
+			for (; TmpECX != 0; TmpECX--, TmpEDI += 4 /*sizeof(int)*/)
+				*reinterpret_cast<unsigned int *>(TmpEDI) = TmpEAX;
+			//add		edi, ebx
+			//dec		dl
+			//jnz		iug
+			//pop		edi
+			TmpEDI += TmpEBX;
+			TmpDL--;
+			if (TmpDL != 0) goto iug;
+		}
+		return;
+	}
+	else
+	{
+		//int a, b, p;
+		int c = ( z3 - z1 ) >> 4;
+		int d = ( z1 + z4 - z3 - z2 ) >> 9;
+		// BoonXRay 11.08.2017
+		//__asm
+		//{
+		//	push	edi
+		//	push	esi
+		//	pushf
+		//	mov		eax, z1
+		//	mov		ebx, eax
+		//	mov		a, ebx
+		//	mov		ecx, z2
+		//	sub		ecx, eax
+		//	sar		ecx, 5
+		//	mov		b, ecx
+		//	//coefficients are now calculated
+		//	mov		ecx, 0x1004
+		//	mov		ebx, a		//bh=fogging value
+		//	mov		edx, b		//dx=fog incrementor
+		//	xor		eax, eax
+		//	mov		esi, scrof
+		//	mov		p, ebx
+		//	qqw1 : mov		eax, ebx
+		//		   sar		eax, 8
+		//		   mov		al, [esi]
+		//		   mov		al, [darkfog + eax]
+		//		   mov[esi], al
+		//		   //inc		esi
+		//		   add		ebx, edx
+		//		   mov		eax, ebx
+		//		   sar		eax, 8
+		//		   mov		al, [esi + 1]
+		//		   mov		al, [darkfog + eax]
+		//		   mov[esi + 1], al
+		//		   //inc		esi
+		//		   add		ebx, edx
+		//		   mov		eax, ebx
+		//		   sar		eax, 8
+		//		   mov		al, [esi + 2]
+		//		   mov		al, [darkfog + eax]
+		//		   mov[esi + 2], al
+		//		   //inc		esi
+		//		   add		ebx, edx
+		//		   mov		eax, ebx
+		//		   sar		eax, 8
+		//		   mov		al, [esi + 3]
+		//		   mov		al, [darkfog + eax]
+		//		   mov[esi + 3], al
+		//		   //inc		esi
+		//		   add		ebx, edx
+		//		   mov		eax, ebx
+		//		   shr		eax, 8
+		//		   mov		al, [esi + 4]
+		//		   mov		al, [darkfog + eax]
+		//		   mov[esi + 4], al
+		//		   //inc		esi
+		//		   add		ebx, edx
+		//		   mov		eax, ebx
+		//		   shr		eax, 8
+		//		   mov		al, [esi + 5]
+		//		   mov		al, [darkfog + eax]
+		//		   mov[esi + 5], al
+		//		   //inc		esi
+		//		   add		ebx, edx
+		//		   mov		eax, ebx
+		//		   shr		eax, 8
+		//		   mov		al, [esi + 6]
+		//		   mov		al, [darkfog + eax]
+		//		   mov[esi + 6], al
+		//		   //inc		esi
+		//		   add		ebx, edx
+		//		   mov		eax, ebx
+		//		   shr		eax, 8
+		//		   mov		al, [esi + 7]
+		//		   mov		al, [darkfog + eax]
+		//		   mov[esi + 7], al
+		//		   add		esi, 8
+		//		   add		ebx, edx
+		//		   mov		eax, ebx
+		//		   shr		eax, 8
+		//		   mov		al, [esi]
+		//		   mov		al, [darkfog + eax]
+		//		   mov[esi], al
+		//		   //inc		esi
+		//		   add		ebx, edx
+		//		   mov		eax, ebx
+		//		   shr		eax, 8
+		//		   mov		al, [esi + 1]
+		//		   mov		al, [darkfog + eax]
+		//		   mov[esi + 1], al
+		//		   //inc		esi
+		//		   add		ebx, edx
+		//		   mov		eax, ebx
+		//		   shr		eax, 8
+		//		   mov		al, [esi + 2]
+		//		   mov		al, [darkfog + eax]
+		//		   mov[esi + 2], al
+		//		   //inc		esi
+		//		   add		ebx, edx
+		//		   mov		eax, ebx
+		//		   shr		eax, 8
+		//		   mov		al, [esi + 3]
+		//		   mov		al, [darkfog + eax]
+		//		   mov[esi + 3], al
+		//		   //inc		esi
+		//		   add		ebx, edx
+		//		   mov		eax, ebx
+		//		   shr		eax, 8
+		//		   mov		al, [esi + 4]
+		//		   mov		al, [darkfog + eax]
+		//		   mov[esi + 4], al
+		//		   //inc		esi
+		//		   add		ebx, edx
+		//		   mov		eax, ebx
+		//		   shr		eax, 8
+		//		   mov		al, [esi + 5]
+		//		   mov		al, [darkfog + eax]
+		//		   mov[esi + 5], al
+		//		   //inc		esi
+		//		   add		ebx, edx
+		//		   mov		eax, ebx
+		//		   shr		eax, 8
+		//		   mov		al, [esi + 6]
+		//		   mov		al, [darkfog + eax]
+		//		   mov[esi + 6], al
+		//		   //inc		esi
+		//		   add		ebx, edx
+		//		   mov		eax, ebx
+		//		   shr		eax, 8
+		//		   mov		al, [esi + 7]
+		//		   mov		al, [darkfog + eax]
+		//		   mov[esi + 7], al
+		//		   add		esi, 8
+		//		   add		ebx, edx
+		//		   mov		eax, ebx
+		//		   shr		eax, 8
+		//		   mov		al, [esi]
+		//		   mov		al, [darkfog + eax]
+		//		   mov[esi], al
+		//		   //inc		esi
+		//		   add		ebx, edx
+		//		   mov		eax, ebx
+		//		   shr		eax, 8
+		//		   mov		al, [esi + 1]
+		//		   mov		al, [darkfog + eax]
+		//		   mov[esi + 1], al
+		//		   //inc		esi
+		//		   add		ebx, edx
+		//		   mov		eax, ebx
+		//		   shr		eax, 8
+		//		   mov		al, [esi + 2]
+		//		   mov		al, [darkfog + eax]
+		//		   mov[esi + 2], al
+		//		   //inc		esi
+		//		   add		ebx, edx
+		//		   mov		eax, ebx
+		//		   shr		eax, 8
+		//		   mov		al, [esi + 3]
+		//		   mov		al, [darkfog + eax]
+		//		   mov[esi + 3], al
+		//		   //inc		esi
+		//		   add		ebx, edx
+		//		   mov		eax, ebx
+		//		   shr		eax, 8
+		//		   mov		al, [esi + 4]
+		//		   mov		al, [darkfog + eax]
+		//		   mov[esi + 4], al
+		//		   //inc		esi
+		//		   add		ebx, edx
+		//		   mov		eax, ebx
+		//		   shr		eax, 8
+		//		   mov		al, [esi + 5]
+		//		   mov		al, [darkfog + eax]
+		//		   mov[esi + 5], al
+		//		   //inc		esi
+		//		   add		ebx, edx
+		//		   mov		eax, ebx
+		//		   shr		eax, 8
+		//		   mov		al, [esi + 6]
+		//		   mov		al, [darkfog + eax]
+		//		   mov[esi + 6], al
+		//		   //inc		esi
+		//		   add		ebx, edx
+		//		   mov		eax, ebx
+		//		   shr		eax, 8
+		//		   mov		al, [esi + 7]
+		//		   mov		al, [darkfog + eax]
+		//		   mov[esi + 7], al
+		//		   add		esi, 8
+		//		   add		ebx, edx
+		//		   mov		eax, ebx
+		//		   shr		eax, 8
+		//		   mov		al, [esi]
+		//		   mov		al, [darkfog + eax]
+		//		   mov[esi], al
+		//		   //inc		esi
+		//		   add		ebx, edx
+		//		   mov		eax, ebx
+		//		   shr		eax, 8
+		//		   mov		al, [esi + 1]
+		//		   mov		al, [darkfog + eax]
+		//		   mov[esi + 1], al
+		//		   //inc		esi
+		//		   add		ebx, edx
+		//		   mov		eax, ebx
+		//		   shr		eax, 8
+		//		   mov		al, [esi + 2]
+		//		   mov		al, [darkfog + eax]
+		//		   mov[esi + 2], al
+		//		   //inc		esi
+		//		   add		ebx, edx
+		//		   mov		eax, ebx
+		//		   shr		eax, 8
+		//		   mov		al, [esi + 3]
+		//		   mov		al, [darkfog + eax]
+		//		   mov[esi + 3], al
+		//		   //inc		esi
+		//		   add		ebx, edx
+		//		   mov		eax, ebx
+		//		   shr		eax, 8
+		//		   mov		al, [esi + 4]
+		//		   mov		al, [darkfog + eax]
+		//		   mov[esi + 4], al
+		//		   //inc		esi
+		//		   add		ebx, edx
+		//		   mov		eax, ebx
+		//		   shr		eax, 8
+		//		   mov		al, [esi + 5]
+		//		   mov		al, [darkfog + eax]
+		//		   mov[esi + 5], al
+		//		   //inc		esi
+		//		   add		ebx, edx
+		//		   mov		eax, ebx
+		//		   shr		eax, 8
+		//		   mov		al, [esi + 6]
+		//		   mov		al, [darkfog + eax]
+		//		   mov[esi + 6], al
+		//		   //inc		esi
+		//		   add		ebx, edx
+		//		   mov		eax, ebx
+		//		   shr		eax, 8
+		//		   mov		al, [esi + 7]
+		//		   mov		al, [darkfog + eax]
+		//		   mov[esi + 7], al
+		//		   add		esi, 8
+		//		   add		ebx, edx
+		//		   //jnz		qqw1
+		//		   add		esi, adds
+		//		   add		edx, d
+		//		   mov		ebx, p
+		//		   add		ebx, c
+		//		   //mov		cl,4
+		//		   mov		p, ebx
+		//		   dec		ch
+		//		   jnz		qqw1
+		//		   popf
+		//		   pop		esi
+		//		   pop		edi
+		//}		
+        //coefficients are now calculated
+        int p = z1;	// Fogging value
+        int TmpEDX = (z2 - z1) / 32;	// Fog incrementor
+        unsigned char * TmpESI = reinterpret_cast<unsigned char *>(ScreenPtr) + x + y * SCRSizeX;
+
+        for (int i = 0; i < 16; i++)
+        {
+            int TmpEBX = p;
+            for (int j = 0; j < 32; j++, TmpESI++, TmpEBX += TmpEDX)
+            {
+                unsigned int TmpEAX = TmpEBX >> 8;
+                *reinterpret_cast<unsigned char *>(&TmpEAX) = * TmpESI;	// Changing lower byte
+                * TmpESI = darkfog[ TmpEAX ];
+            }
+
+            TmpESI += adds;
+            TmpEDX += d;
+            p += c;
+        }
+	}
+}
+
+#define shf 300
+#define fmin 1500
+
+static uint8_t fden[8192];
+
+void makeFden()
+{
+	for ( int i = 0; i < 8192; i++ )
+	{
+		if ( i > shf )
+			fden[i] = 158;
+		else
+			fden[i] = 5 + div( i * 153, shf ).quot;
+	}
+}
+
+static int GetF( word k )
+{
+	if ( k >= fmin )
+	{
+		return 5;
+	}
+
+	return fden[fmin - k];
+}
+
+void TurnFogOff()
+{
+	FogMode = 0;
+}
+
+void UnitLight( OneObject* OB )
+{
+	if ( !OB->Ready )
+	{
+		return;
+	}
+
+	int xx = OB->RealX >> 4;
+	int yy = OB->RealY >> 4;
+	yy -= ( GetHeight( xx, yy ) << 1 );
+	NewMonster* NM = OB->newMons;
+	switch ( NM->VisionType )
+	{
+	case 0:
+		//Default unit line of view
+		FogSpot( xx, yy );
+		break;
+	case 1:
+		FogSpot( xx + 128, yy );
+		FogSpot( xx - 128, yy );
+		FogSpot( xx, yy + 128 );
+		FogSpot( xx, yy - 128 );
+		break;
+	case 2:
+		FogSpot( xx + 128, yy + 128 );
+		FogSpot( xx - 128, yy + 128 );
+		FogSpot( xx + 128, yy - 128 );
+		FogSpot( xx - 128, yy - 128 );
+		break;
+	case 3:
+		FogSpot( xx + 2 * 128, yy );
+		FogSpot( xx - 2 * 128, yy );
+		FogSpot( xx, yy - 2 * 128 );
+		FogSpot( xx, yy + 2 * 128 );
+		FogSpot( xx + 128, yy + 128 );
+		FogSpot( xx - 128, yy + 128 );
+		FogSpot( xx + 128, yy - 128 );
+		FogSpot( xx - 128, yy - 128 );
+		break;
+	case 4:
+		FogSpot( xx + 3 * 128, yy );
+		FogSpot( xx - 3 * 128, yy );
+		FogSpot( xx, yy + 3 * 128 );
+		FogSpot( xx, yy - 3 * 128 );
+		FogSpot( xx + 2 * 128, yy + 2 * 128 );
+		FogSpot( xx - 2 * 128, yy + 2 * 128 );
+		FogSpot( xx + 2 * 128, yy - 2 * 128 );
+		FogSpot( xx - 2 * 128, yy - 2 * 128 );
+		break;
+	case 5:
+		FogSpot( xx + 4 * 128, yy );
+		FogSpot( xx - 4 * 128, yy );
+		FogSpot( xx, yy + 4 * 128 );
+		FogSpot( xx, yy - 4 * 128 );
+		FogSpot( xx + 3 * 128, yy + 3 * 128 );
+		FogSpot( xx - 3 * 128, yy + 3 * 128 );
+		FogSpot( xx + 3 * 128, yy - 3 * 128 );
+		FogSpot( xx - 3 * 128, yy - 3 * 128 );
+		break;
+	case 6:
+		FogSpot( xx + 5 * 128, yy );
+		FogSpot( xx - 5 * 128, yy );
+		FogSpot( xx, yy + 5 * 128 );
+		FogSpot( xx, yy - 5 * 128 );
+		FogSpot( xx + 4 * 128, yy + 4 * 128 );
+		FogSpot( xx - 4 * 128, yy + 4 * 128 );
+		FogSpot( xx + 4 * 128, yy - 4 * 128 );
+		FogSpot( xx - 4 * 128, yy - 4 * 128 );
+		break;
+	case 7:
+		FogSpot( xx + 6 * 128, yy );
+		FogSpot( xx - 6 * 128, yy );
+		FogSpot( xx, yy + 6 * 128 );
+		FogSpot( xx, yy - 6 * 128 );
+		FogSpot( xx + 4 * 128, yy + 4 );
+		FogSpot( xx - 4 * 128, yy + 4 * 128 );
+		FogSpot( xx + 4 * 128, yy - 4 * 128 );
+		FogSpot( xx - 4 * 128, yy - 4 * 128 );
+		break;
+	case 8:
+		//Ukrainian peasant line of view
+		FogSpot( xx, yy );//BUGFIX: Make peasants visible immediately at game start
+		FogSpot( xx + 7 * 128, yy );
+		FogSpot( xx - 7 * 128, yy );
+		FogSpot( xx, yy + 7 * 128 );
+		FogSpot( xx, yy - 7 * 128 );
+		FogSpot( xx + 5 * 128, yy + 3 );
+		FogSpot( xx - 5 * 128, yy + 5 * 128 );
+		FogSpot( xx + 5 * 128, yy - 5 * 128 );
+		FogSpot( xx - 5 * 128, yy - 5 * 128 );
+		break;
+	}
+}
+
+//New fog of war
+static uint16_t WFSC[128 * 128];
+static int maxWFX;
+static int maxWFY;
+
+static void SetWF( int x, int y, word w )
+{
+	if ( x<0 || y<0 || x>maxWFX || y>maxWFY )
+	{
+		return;
+	}
+
+	WFSC[x + ( y * 128 )] = w;
+}
+
+static int maxFX, maxFY;
+
+void CreateFogImage()
+{
+	maxWFX = smaplx;
+	maxWFY = smaply;
+	maxFX = ( msx / 4 ) + kFogOffset;
+	maxFY = ( msy / 4 ) + kFogOffset;
+
+	int mx0 = mapx / 4;
+	int my0 = mapy / 4;
+	int mx1 = mapx + smaplx;
+
+	if ( mx1 % 4 )
+	{
+		mx1 = ( mx1 / 4 ) + 1;
+	}
+	else
+	{
+		mx1 /= 4;
+	}
+
+	int my1 = mapy + smaply;
+
+	if ( my1 % 4 )
+	{
+		my1 = ( my1 / 4 ) + 1;
+	}
+	else
+	{
+		my1 /= 4;
+	}
+
+	word* FMAP = (word*) fmap;
+	int fogof0 = ( my0 + kFogOffset ) * FMSX + mx0 + kFogOffset;
+
+	for ( int myy = my0; myy <= my1; myy++ )
+	{
+		int fogof = fogof0;
+
+		for ( int mxx = mx0; mxx <= mx1; mxx++ )
+		{
+			int mcx = ( mxx * 4 ) - mapx;
+			int mcy = ( myy * 4 ) - mapy;
+
+			int F[5][5];
+
+			F[0][0] = FMAP[fogof];
+			F[0][4] = FMAP[fogof + 1];
+			F[4][0] = FMAP[fogof + FMSX];
+			F[4][4] = FMAP[fogof + FMSX + 1];
+
+			F[2][2] = ( F[0][0] + F[4][4] + F[0][4] + F[4][0] ) >> 2;
+			F[0][2] = ( F[0][0] + F[0][4] ) / 2;
+			F[2][0] = ( F[0][0] + F[4][0] ) / 2;
+			F[2][4] = ( F[0][4] + F[4][4] ) / 2;
+			F[4][2] = ( F[4][0] + F[4][4] ) / 2;
+
+			F[0][1] = ( F[0][0] + F[0][2] ) / 2;
+			F[0][3] = ( F[0][2] + F[0][4] ) / 2;
+			F[1][0] = ( F[0][0] + F[2][0] ) / 2;
+			F[1][1] = ( F[0][0] + F[2][0] + F[0][2] + F[2][2] ) / 4;
+			F[1][2] = ( F[0][2] + F[2][2] ) / 2;
+			F[1][3] = ( F[0][2] + F[0][4] + F[2][2] + F[2][4] ) / 4;
+			F[1][4] = ( F[0][4] + F[2][4] ) / 2;
+
+			F[2][1] = ( F[2][0] + F[2][2] ) / 2;
+			F[2][3] = ( F[2][2] + F[2][4] ) / 2;
+
+			F[3][0] = ( F[2][0] + F[4][0] ) / 2;
+			F[3][1] = ( F[2][0] + F[2][2] + F[4][0] + F[4][2] ) / 4;
+			F[3][2] = ( F[2][2] + F[4][2] ) / 2;
+			F[3][3] = ( F[2][2] + F[2][4] + F[4][2] + F[4][4] ) / 4;
+			F[3][4] = ( F[2][4] + F[4][4] ) / 2;
+
+			F[4][1] = ( F[4][0] + F[4][2] ) / 2;
+			F[4][3] = ( F[4][2] + F[4][4] ) / 2;
+
+			for ( int i = 0; i < 4; i++ )
+			{
+				for ( int j = 0; j < 4; j++ )
+				{
+					int xx = mcx + i;
+					int yy = mcy + j;
+
+					SetWF( xx, yy, F[j][i] );
+					SetWF( xx + 1, yy, F[j + 1][i] );
+					SetWF( xx, yy + 1, F[j][i + 1] );
+					SetWF( xx + 1, yy + 1, F[j + 1][i + 1] );
+				}
+			}
+			fogof++;
+		}
+		fogof0 += FMSX;
+	}
+}
+
+void DrawFog()
+{
+	for ( int y = 0; y < smaply; y++ )
+	{
+		for ( int x = 0; x < smaplx; x++ )
+		{
+			int xx = ( x * 32 ) + smapx;
+			int yy = ( y * 16 ) + smapy;
+			int sof = x + ( y * 128 );
+
+			ShowSuperFluentFog32_160_16(
+				xx, yy,
+				GetF( WFSC[sof] ),
+				GetF( WFSC[sof + 1] ),
+				GetF( WFSC[sof + 128] ),
+				GetF( WFSC[sof + 129] )
+			);
+		}
+	}
+}
+
+void FogSpot( int x, int y )
+{
+	int fx = ( ( x + 64 ) / 128 ) + kFogOffset;
+	int fy = ( ( y + 64 ) / 128 ) + kFogOffset;
+
+	if ( fx < 1 )
+	{
+		fx = 1;
+	}
+
+	if ( fy < 1 )
+	{
+		fy = 1;
+	}
+
+	if ( fx > maxFX )
+	{
+		fx = maxFX;
+	}
+
+	if ( fy > maxFY )
+	{
+		fy = maxFY;
+	}
+
+	fmap[FOGOFFS[fy] + fx] = 8000;
+}
+
+//Checks if the given coordinates are concealed through fog of war
+//Return value < 900 means 'fogged', everything above - 'visible'
+//Beware: y coordinate must be multiplied by 2?
+//Example: if (GetFog(x, y << 1) < 900 && FogMode) //true if fogged
+uint16_t GetFog( int x, int y )
+{
+	int fx = ( ( x + 64 ) / 128 ) + kFogOffset;
+	int fy = ( ( y + 64 ) / 128 ) + kFogOffset;
+
+	if ( fx < 1 )
+	{
+		fx = 1;
+	}
+
+	if ( fy < 1 )
+	{
+		fy = 1;
+	}
+
+	if ( fx > maxFX )
+	{
+		fx = maxFX;
+	}
+
+	if ( fy > maxFY )
+	{
+		fy = maxFY;
+	}
+
+	return fmap[FOGOFFS[fy] + fx];
+}
+
+void DrawMiniFog()
+{
+	int sofs = int( ScreenPtr ) + minix + miniy * ScrWidth;
+	int fofs = int( fmap ) + ( ( ( ( MiniX >> 1 ) << ( ADDSH - 1 ) ) + kFogOffset + 1 + FMSX*( ( ( MiniY >> 1 ) << ( ADDSH - 1 ) ) + kFogOffset + 1 ) ) << 1 );
+
+
+	int MMSX = ( MiniLx / 2 );
+	int MMSY = ( MiniLy / 2 );
+	int addscr = ScrWidth + ScrWidth - MMSX - MMSX;
+	int F_add = ( FMSX2 << ( ADDSH - 1 ) ) - ( MMSX << ADDSH );
+	int DDDX = 1 << ADDSH;
+
+    // BoonXRay 10.08.2017
+	//__asm
+	{
+		//push	esi
+		//push	edi
+		//pushf
+		//mov		esi, fofs
+		//mov		edi, sofs
+		//mov		edx, ScrWidth
+		//mov		ebx, DDDX
+		unsigned int TmpESI = fofs;
+		unsigned int TmpEDI = sofs;
+		unsigned int TmpEDX = ScrWidth;
+		unsigned int TmpEBX = DDDX;
+		unsigned int TmpEAX = 0, TmpECX = 0;
+		unsigned short & TmpAX = *reinterpret_cast<unsigned short *>(&TmpEAX);
+	lopx1 :
+		//mov		ecx, MMSX
+		TmpECX = MMSX;
+	lopx3 :
+		//mov     ax, [esi]
+		//add		esi, ebx
+		TmpAX= *reinterpret_cast<unsigned short *>(TmpESI);
+		TmpESI += TmpEBX;
+
+		//cmp		ax, 1300
+		//ja		lopx2
+		//mov		word ptr[edi], 0
+		//mov		word ptr[edi + edx], 0
+		if (TmpAX > 1300) goto lopx2;
+		*reinterpret_cast<unsigned short *>(TmpEDI) = 0;
+		*reinterpret_cast<unsigned short *>(TmpEDI+TmpEDX) = 0;
+	lopx2:	
+		//add		edi, 2
+		//dec		ecx
+		//jnz		lopx3
+		//add		esi, F_add
+		//add		edi, addscr
+		//dec		MMSY
+		//jnz		lopx1
+		//popf
+		//pop		edi
+		//pop		esi
+		TmpEDI += 2;
+		TmpECX--;
+		if (TmpECX != 0) goto lopx3;
+		TmpESI += F_add;
+		TmpEDI += addscr;
+		MMSY--;
+		if (MMSY != 0) goto lopx1;
+	}
+}
