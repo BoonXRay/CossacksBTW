@@ -9,6 +9,8 @@
 #define SprShf (6+ADDSH)
 extern int MaxSprt;
 
+#pragma pack( push, 1 )
+
 class NewAnimation;
 
 class ObjCharacter{
@@ -85,6 +87,8 @@ public:
     void Add(int ID,uint8_t Kind);
     void Del(int ID,uint8_t Kind);
 };
+
+#pragma pack(pop)
 
 extern TimeReq ObjTimer;
 extern uint8_t * NSpri;

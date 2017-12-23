@@ -3,6 +3,7 @@
 
 #include <cstdint>
 
+#pragma pack( push, 1 )
 
 struct BrigMemb
 {
@@ -157,6 +158,9 @@ struct CostPlace
     uint8_t Access;
     uint16_t Transport;
 };
+
+#pragma pack(pop)
+
 extern CostPlace* COSTPL;
 extern int NCost;
 extern int MaxCost;

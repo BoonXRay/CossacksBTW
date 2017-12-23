@@ -14,6 +14,8 @@
 #include "Economy.h"
 
 
+#pragma pack( push, 1 )
+
 class Economy
 {
 public:
@@ -66,6 +68,8 @@ public:
 	void PerformOperation( byte Nation, byte SellRes, byte BuyRes, int SellAmount );
 	void Process();
 };
+
+#pragma pack(pop)
 
 static void EERR()
 {

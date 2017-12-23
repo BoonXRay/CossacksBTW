@@ -332,7 +332,7 @@ static void ShowRLC( int x, int y, void* PicPtr )
 				//clipping right code
 				//cmp		bx, cx
 				//jge		ok2
-				if (TmpBX >= TmpCX) goto ok2;
+                if (static_cast<short>(TmpBX) >= static_cast<short>(TmpCX)) goto ok2;
 				//clipping
 				//cmp		bx, 0
 				//jle		ntd2
@@ -743,7 +743,8 @@ static void ShowRLCi( int x, int y, void* PicPtr )
 				//clipping right code
 				//cmp		bx, cx
 				//jge		ok2
-				if (TmpBX >= TmpCX) goto ok2;
+                //if (TmpBX >= TmpCX) goto ok2;
+                if (static_cast<short>(TmpBX) >= static_cast<short>(TmpCX)) goto ok2;
 				//clipping
 				//cmp		bx, 0
 				//jle		ntd2
